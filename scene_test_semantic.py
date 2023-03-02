@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.utils.data as data
 import matplotlib.pyplot as plt
+import shutil
 
 from src import utils, model_utils
 from src.dataset import PASTIS_Dataset, HaenamDataset
@@ -64,7 +65,7 @@ def get_seed(raster, length, overlap):
 
 class TestHaenamDataset(torch.utils.data.Dataset):
     def __init__(self,
-                 folder="/nas/k8s/dev/research/doyoungi/dataset/ads_22a/normed"
+                 folder="datasets/target_scenes"
                  ):
         super(TestHaenamDataset, self).__init__()
         tif_list = glob(folder + "/*.tif")
@@ -111,7 +112,8 @@ if __name__ == '__main__':
     with open(os.path.join(weight_folder, "conf.json")) as file:
         model_config = json.loads(file.read())
     
-    config = {**model_config, 'dataset_folder': '/nas/k8s/dev/research/doyoungi/dataset/ads_22a/pastis_style'}
+    # config = {**model_config, 'dataset_folder': '/nas/k8s/dev/research/doyoungi/dataset/ads_22a/pastis_style'}
+    config = {**model_config, 'dataset_folder': 'datasets/mini_target_dataset'}
     config = argparse.Namespace(**config)
     config.fold = None
     device = 'cuda'
@@ -149,7 +151,6 @@ if __name__ == '__main__':
         if device is not None:
             batch = recursive_todevice(batch, device)
         (x, dates), (x_tic, y_tic) = batch
-
         with torch.no_grad():
             out = model(x, batch_positions=dates)
             
@@ -168,4 +169,45 @@ if __name__ == '__main__':
             np.save(os.path.join(save_folder, basename), prediction)
 
 
+    rootdir = args.weight_folder
+    path = os.path.join(rootdir, 'scene_infernece')
+    raster_folder="datasets/target_scenes"
+
+    raster = rasterio.open(glob(raster_folder + '/*tif')[0])
+    npylist = glob(save_folder + '/*.npy')
+    print(len(npylist))
+
+    npylist = sorted(npylist)
+    emptyimg = np.zeros(raster.shape).astype('uint8')
+    print(emptyimg.shape)
+
+    for npy in tqdm(npylist):
+        img1 = np.load(npy)
+
+        small_img = cv2.resize(img1, dsize=(32,32), interpolation=cv2.INTER_LINEAR)
+        basename = os.path.basename(npy)
+        x, y = os.path.splitext(basename)[0].split('_')
+
+        try:
+            emptyimg[int(y):int(y)+32, int(x):int(x)+32] = small_img
+        except:
+            print(x, y)
+            pass
+        
+    np.save(os.path.join(rootdir, 'scene_inference.npy'), emptyimg)
+
+    meta = raster.meta.copy()
+    print(meta)
+
+    meta.update({'dtype':'uint8',
+                'nodata': 255,
+                'count':1})
+
+    img = np.load(os.path.join(rootdir, 'scene_inference.npy'))
+    savename = os.path.join(rootdir, 'scene_inference.tif')
+    print(savename)
+    with rasterio.open(savename, 'w', **meta) as src:
+        src.write(img, 1)
+
+    shutil.rmtree(path)
     print('Done!')
