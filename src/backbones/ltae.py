@@ -94,7 +94,6 @@ class LTAE2d(nn.Module):
             pad_mask = (
                 pad_mask.permute(0, 2, 3, 1).contiguous().view(sz_b * h * w, seq_len)
             )
-
         out = x.permute(0, 3, 4, 1, 2).contiguous().view(sz_b * h * w, seq_len, d)
         out = self.in_norm(out.permute(0, 2, 1)).permute(0, 2, 1)
 

@@ -67,7 +67,6 @@ class ConfusionMatrix(Metric):
         of integer values between 0 and K-1.
 
         """
-
         # If target and/or predicted are tensors, convert them to numpy arrays
         if self.device == 'cpu':
             if torch.is_tensor(predicted):
@@ -102,6 +101,8 @@ class ConfusionMatrix(Metric):
                     'target values are not between 0 and k-1'
 
         # hack for bincounting 2 arrays together
+
+        target[target == 255] = 0
         x = predicted + self.num_classes * target
 
         if self.device == 'cpu':
@@ -112,7 +113,7 @@ class ConfusionMatrix(Metric):
         else:
             bincount_2d = torch.bincount(
                 x, minlength=self.num_classes ** 2)
-
+            # print(bincount_2d.shape) # 400
             conf = bincount_2d.view((self.num_classes, self.num_classes))
         self.conf += conf
 
@@ -222,8 +223,11 @@ class IoU(Metric):
         if torch.is_tensor(conf_matrix):
             conf_matrix = conf_matrix.cpu().numpy()
         if self.ignore_index is not None:
-            conf_matrix[:, self.ignore_index] = 0
-            conf_matrix[self.ignore_index, :] = 0
+            if self.ignore_index[0] == 255:
+                pass
+            else:
+                conf_matrix[:, self.ignore_index] = 0
+                conf_matrix[self.ignore_index, :] = 0
         true_positive = np.diag(conf_matrix)
         false_positive = np.sum(conf_matrix, 0) - true_positive
         false_negative = np.sum(conf_matrix, 1) - true_positive
@@ -235,3 +239,25 @@ class IoU(Metric):
         acc = float(np.diag(conf_matrix).sum() / conf_matrix.sum() * 100)
 
         return miou, acc
+
+    def get_iou_acc(self):
+        conf_matrix = self.conf_metric.value()
+        if torch.is_tensor(conf_matrix):
+            conf_matrix = conf_matrix.cpu().numpy()
+        if self.ignore_index is not None:
+            if self.ignore_index[0] == 255:
+                pass
+            else:
+                conf_matrix[:, self.ignore_index] = 0
+                conf_matrix[self.ignore_index, :] = 0
+        true_positive = np.diag(conf_matrix)
+        false_positive = np.sum(conf_matrix, 0) - true_positive
+        false_negative = np.sum(conf_matrix, 1) - true_positive
+
+        # Just in case we get a division by 0, ignore/hide the error
+        with np.errstate(divide='ignore', invalid='ignore'):
+            iou = true_positive / (true_positive + false_positive + false_negative)
+        # miou = float(np.nanmean(iou) * 100)
+        # acc = float(np.diag(conf_matrix).sum() / conf_matrix.sum() * 100)
+
+        return iou, conf_matrix

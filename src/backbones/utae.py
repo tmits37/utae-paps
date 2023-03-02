@@ -133,6 +133,7 @@ class UTAE(nn.Module):
         pad_mask = (
             (input == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
         )  # BxT pad mask
+        # print(input.dtype, pad_mask.dtype) # uint8, bool, originally input should be float32
         out = self.in_conv.smart_forward(input)
         feature_maps = [out]
         # SPATIAL ENCODER
@@ -155,6 +156,7 @@ class UTAE(nn.Module):
                 maps.append(out)
 
         if self.encoder:
+            print(out.shape)
             return out, maps
         else:
             out = self.out_conv(out)

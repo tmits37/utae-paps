@@ -17,10 +17,32 @@ import torch.utils.data as data
 import torchnet as tnt
 
 from src import utils, model_utils
-from src.dataset import PASTIS_Dataset
+from src.dataset import PASTIS_Dataset, HaenamDataset
 from src.learning.metrics import confusion_matrix_analysis
 from src.learning.miou import IoU
 from src.learning.weight_init import weight_init
+
+def on_load_checkpoint(model, checkpoint):
+    state_dict = checkpoint["state_dict"]
+    model_state_dict = model.state_dict()
+    is_changed = False
+    print('on load checkpoint')
+    for k in state_dict:
+        if k in model_state_dict:
+            if state_dict[k].shape != model_state_dict[k].shape:
+                # logger.info(f"Skip loading parameter: {k}, "
+                #             f"required shape: {model_state_dict[k].shape}, "
+                #             f"loaded shape: {state_dict[k].shape}")
+                state_dict[k] = model_state_dict[k]
+                is_changed = True
+        else:
+            # logger.info(f"Dropping parameter {k}")
+            is_changed = True
+
+    if is_changed:
+        checkpoint.pop("optimizer_states", None)
+    return model
+
 
 parser = argparse.ArgumentParser()
 # Model parameters
@@ -83,6 +105,8 @@ parser.add_argument("--batch_size", default=4, type=int, help="Batch size")
 parser.add_argument("--lr", default=0.001, type=float, help="Learning rate")
 parser.add_argument("--mono_date", default=None, type=str)
 parser.add_argument("--ref_date", default="2018-09-01", type=str)
+parser.add_argument("--rgbn", action='store_true')
+parser.add_argument("--custom-dataset", action='store_true')
 parser.add_argument(
     "--fold",
     default=None,
@@ -93,6 +117,13 @@ parser.add_argument("--num_classes", default=20, type=int)
 parser.add_argument("--ignore_index", default=-1, type=int)
 parser.add_argument("--pad_value", default=0, type=float)
 parser.add_argument("--padding_mode", default="reflect", type=str)
+parser.add_argument(
+    "--weight_folder",
+    type=str,
+    default="",
+    help="Path to the main folder containing the pre-trained weights",
+)
+parser.add_argument('--timestep', default=7, type=int)
 parser.add_argument(
     "--val_every",
     default=1,
@@ -114,11 +145,18 @@ def iterate(
     model, data_loader, criterion, config, optimizer=None, mode="train", device=None
 ):
     loss_meter = tnt.meter.AverageValueMeter()
-    iou_meter = IoU(
-        num_classes=config.num_classes,
-        ignore_index=config.ignore_index,
-        cm_device=config.device,
-    )
+    if config.custom_dataset:
+        iou_meter = IoU(
+            num_classes=config.num_classes,
+            ignore_index=255,
+            cm_device=config.device,
+        )
+    else:
+        iou_meter = IoU(
+            num_classes=config.num_classes,
+            ignore_index=config.ignore_index,
+            cm_device=config.device,
+        )
 
     t_start = time.time()
     for i, batch in enumerate(data_loader):
@@ -126,7 +164,7 @@ def iterate(
             batch = recursive_todevice(batch, device)
         (x, dates), y = batch
         y = y.long()
-
+        print(x.shape, dates.shape, y.shape)
         if mode != "train":
             with torch.no_grad():
                 out = model(x, batch_positions=dates)
@@ -141,16 +179,21 @@ def iterate(
 
         with torch.no_grad():
             pred = out.argmax(dim=1)
+        # print(out.shape)
+        # print(y.shape, pred.shape) # [4, 128, 128] [4, 128, 128] or [1, 128, 128] [1, 128, 128]
         iou_meter.add(pred, y)
         loss_meter.add(loss.item())
 
         if (i + 1) % config.display_step == 0:
             miou, acc = iou_meter.get_miou_acc()
+            iou, conf_matrix = iou_meter.get_iou_acc()
             print(
                 "Step [{}/{}], Loss: {:.4f}, Acc : {:.2f}, mIoU {:.2f}".format(
                     i + 1, len(data_loader), loss_meter.value()[0], acc, miou
                 )
             )
+            print("IoU:", iou)
+            print(conf_matrix)
 
     t_end = time.time()
     total_time = t_end - t_start
@@ -162,6 +205,9 @@ def iterate(
         "{}_IoU".format(mode): miou,
         "{}_epoch_time".format(mode): total_time,
     }
+    iou, conf_matrix = iou_meter.get_iou_acc()
+    print("IoU:", iou)
+    print(conf_matrix)
 
     if mode == "test":
         return metrics, iou_meter.conf_metric.value()  # confusion matrix
@@ -228,12 +274,15 @@ def overall_performance(config):
 
 
 def main(config):
+    if config.rgbn:
+        config.model = "custom_utae"
+        print(f"Model is {config.model}")
     fold_sequence = [
         [[1, 2, 3], [4], [5]],
         [[2, 3, 4], [5], [1]],
-        [[3, 4, 5], [1], [2]],
-        [[4, 5, 1], [2], [3]],
-        [[5, 1, 2], [3], [4]],
+        # [[3, 4, 5], [1], [2]],
+        # [[4, 5, 1], [2], [3]],
+        # [[5, 1, 2], [3], [4]],
     ]
 
     np.random.seed(config.rdm_seed)
@@ -256,11 +305,19 @@ def main(config):
             mono_date=config.mono_date,
             target="semantic",
             sats=["S2"],
+            rgbn=config.rgbn,
         )
 
-        dt_train = PASTIS_Dataset(**dt_args, folds=train_folds, cache=config.cache)
-        dt_val = PASTIS_Dataset(**dt_args, folds=val_fold, cache=config.cache)
-        dt_test = PASTIS_Dataset(**dt_args, folds=test_fold)
+        if config.custom_dataset:
+            print('set custom_dataset')
+            dt_train = HaenamDataset(folder=config.dataset_folder, timestep=config.timestep)
+            dt_val = HaenamDataset(folder=config.dataset_folder, timestep=config.timestep)
+            dt_test = HaenamDataset(folder=config.dataset_folder, timestep=config.timestep)
+
+        else:
+            dt_train = PASTIS_Dataset(**dt_args, folds=train_folds, cache=config.cache)
+            dt_val = PASTIS_Dataset(**dt_args, folds=val_fold, cache=config.cache)
+            dt_test = PASTIS_Dataset(**dt_args, folds=test_fold)
 
         collate_fn = lambda x: utils.pad_collate(x, pad_value=config.pad_value)
         train_loader = data.DataLoader(
@@ -296,19 +353,36 @@ def main(config):
             file.write(json.dumps(vars(config), indent=4))
         print(model)
         print("TOTAL TRAINABLE PARAMETERS :", config.N_params)
-        print("Trainable layers:")
-        for name, p in model.named_parameters():
-            if p.requires_grad:
-                print(name)
+        # print("Trainable layers:")
+        # for name, p in model.named_parameters():
+        #     if p.requires_grad:
+        #         print(name)
         model = model.to(device)
         model.apply(weight_init)
+        if config.weight_folder:
+            #  Load weights
+            print("Loading the weights")
+            sd = torch.load(
+                os.path.join(config.weight_folder, "Fold_{}".format(fold+1), "model.pth.tar"),
+                map_location=device,
+            )
+            # model.load_state_dict(sd["state_dict"], strict=False, overwrite_tensor_shape=True)
+            model = on_load_checkpoint(model, sd)
 
         # Optimizer and Loss
         optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
 
         weights = torch.ones(config.num_classes, device=device).float()
         weights[config.ignore_index] = 0
-        criterion = nn.CrossEntropyLoss(weight=weights)
+
+        if config.custom_dataset:
+            weights = torch.Tensor([1, 2]).to('cuda').float()
+            criterion = nn.CrossEntropyLoss(
+                        weight=weights,
+                        ignore_index=255
+                        )
+        else:
+            criterion = nn.CrossEntropyLoss(weight=weights)
 
         # Training loop
         trainlog = {}
