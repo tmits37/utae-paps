@@ -164,7 +164,7 @@ def iterate(
             batch = recursive_todevice(batch, device)
         (x, dates), y = batch
         y = y.long()
-        print(x.shape, dates.shape, y.shape)
+        # print(x.shape, dates.shape, y.shape)
         if mode != "train":
             with torch.no_grad():
                 out = model(x, batch_positions=dates)
@@ -193,7 +193,7 @@ def iterate(
                 )
             )
             print("IoU:", iou)
-            print(conf_matrix)
+            # print(conf_matrix)
 
     t_end = time.time()
     total_time = t_end - t_start
@@ -207,7 +207,6 @@ def iterate(
     }
     iou, conf_matrix = iou_meter.get_iou_acc()
     print("IoU:", iou)
-    print(conf_matrix)
 
     if mode == "test":
         return metrics, iou_meter.conf_metric.value()  # confusion matrix
