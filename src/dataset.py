@@ -1,12 +1,53 @@
 import json
 import os
 from datetime import datetime
+from glob import glob
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data as tdata
+
+
+class HaenamDataset(tdata.Dataset):
+    def __init__(self,
+                 folder,
+                 timestep=7,
+                 ):
+        super(HaenamDataset, self).__init__()
+        self.folder = folder
+        self.timestep = timestep
+        gt_folder = os.path.join(self.folder, 'gt')
+        img_folder = os.path.join(self.folder, 'img')
+        self.img_list = sorted(glob(img_folder + '/*.npy'))
+        self.gt_list = sorted(glob(gt_folder + '/*.npy'))
+
+        self.mean=[103.53, 116.28, 123.675, 123.675],
+        self.std=[57.375, 57.12, 58.395, 58.395],
+        
+    def __len__(self):
+        return len(self.img_list)
+
+    def __getitem__(self, item):
+        data = np.load(self.img_list[item]).astype('float32')
+        target = np.load(self.gt_list[item])
+
+        # norm data
+        mean = np.array(self.mean)[..., None, None] # [np.newaxis, :]
+        std = np.array(self.std)[..., None, None] # [np.newaxis, :]
+
+        data = (data - mean) / std
+
+        data = torch.from_numpy(data).float() # .type(torch.FloatTensor)
+        dates = torch.tensor([296, 301, 306, 311, 326, 331, 336]) # fixed to 7
+        target = torch.from_numpy(target)
+        # float32, int64, uint8
+
+        data = data[:self.timestep]
+        dates = dates[:self.timestep]
+
+        return (data, dates), target
 
 
 class PASTIS_Dataset(tdata.Dataset):
@@ -22,6 +63,7 @@ class PASTIS_Dataset(tdata.Dataset):
         class_mapping=None,
         mono_date=None,
         sats=["S2"],
+        rgbn=False,
     ):
         """
         Pytorch Dataset class to load samples from the PASTIS dataset, for semantic and
@@ -75,11 +117,18 @@ class PASTIS_Dataset(tdata.Dataset):
         self.reference_date = datetime(*map(int, reference_date.split("-")))
         self.cache = cache
         self.mem16 = mem16
-        self.mono_date = (
-            datetime(*map(int, mono_date.split("-")))
-            if "-" in mono_date
-            else int(mono_date)
-        )
+
+        if mono_date:
+            self.mono_date = (
+                datetime(*map(int, mono_date.split("-")))
+                if "-" in mono_date
+                else int(mono_date)
+            )
+        else:
+            self.mono_date = None
+        self.rgbn = rgbn
+        if self.rgbn:
+            print('Activiating 4band BGRN dataset')
         self.memory = {}
         self.memory_dates = {}
         self.class_mapping = (
@@ -291,6 +340,16 @@ class PASTIS_Dataset(tdata.Dataset):
         if len(self.sats) == 1:
             data = data[self.sats[0]]
             dates = dates[self.sats[0]]
+
+        if self.rgbn: # [4band output]
+            bgr = data[:, :3]
+            n = data[:, 6:7]
+            data = np.concatenate([bgr, n], axis=1)
+
+        # print(data.shape) # [T, C, H, W]
+        # print(dates)
+        # print(data)
+        # print(data.dtype)
 
         return (data, dates), target
 
